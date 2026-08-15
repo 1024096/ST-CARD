@@ -1,0 +1,15 @@
+{
+  "id": "b1c2d3e4-f5a6-7890-abcd-ef1234567890",
+  "scriptName": "夜莺之巢-实时修改",
+  "findRegex": "<brothel/>",
+  "replaceString": "```\n<body>\n<script>\n$('body').load('http://localhost:5500/brothel_salon/index.html')\n</script>\n</body>\n```",
+  "trimStrings": [],
+  "placement": [1, 2],
+  "disabled": false,
+  "markdownOnly": true,
+  "promptOnly": false,
+  "runOnEdit": false,
+  "substituteRegex": 0,
+  "minDepth": null,
+  "maxDepth": null
+}
