@@ -1,0 +1,15 @@
+{
+  "id": "c5e8a9d0-89b0-47bb-a9b2-f2c54bb43f1e",
+  "scriptName": "自选开场白-实时修改",
+  "findRegex": "<自选开场白\\s*/>",
+  "replaceString": "```\n<body>\n<script>\n$('body').load('http://localhost:5500/dist/自选开场白/index.html')\n</script>\n</body>\n```",
+  "trimStrings": [],
+  "placement": [1, 2],
+  "disabled": false,
+  "markdownOnly": true,
+  "promptOnly": false,
+  "runOnEdit": true,
+  "substituteRegex": 0,
+  "minDepth": null,
+  "maxDepth": null
+}

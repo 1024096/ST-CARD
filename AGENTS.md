@@ -15,6 +15,36 @@
 
 连接到网页后, 你需要检查 `$('#extensions_settings')` 中的`酒馆助手-实时监听-允许监听`开关是否处于启用状态. 一旦启用, 则界面、脚本代码到酒馆网页的实时同步已经建立好了: 在代码变更后, 酒馆网页上将热重载新的脚本或界面代码, 因此你不需要刷新酒馆网页, 也不需要自己运行 `pnpm build` 来更新代码打包结果, 直接查看网页即可.
 
+## Git 工作流与模板同步
+
+本仓库基于作者的模板仓库 (`StageDog/tavern_helper_template`) 建立, 已配置两个远程, 你在提交和同步时需遵循以下规则:
+
+- `origin`: 我自己的仓库, 日常开发只推送到这里
+- `upstream`: 作者的模板仓库, 仅用于拉取模板更新, **禁止向其推送**
+
+### 日常提交并推到自己仓库
+
+```bash
+git add -A && git commit -m "..." && git push
+```
+
+### 同步作者模板更新 (手动按需执行)
+
+当需要引入作者对模板共享文件 (如 `@types/`、`util/`、`webpack.config.ts`、`tavern_sync.mjs`、`package.json` 等) 的更新时, 执行:
+
+```bash
+git fetch upstream
+git merge upstream/main -X patience        # 模板共享文件更新, src/ 下你自己的项目不受影响
+git push
+```
+
+注意事项:
+
+- 我自己开发的项目都在 `src/` 下以独立文件夹形式存在 (如 `src/brothel_salon/`), 它们不会与模板冲突, 合并是安全的
+- 若合并出现冲突, 模板共享文件优先取 `upstream` 版本; 只有 `.vscode/launch.json`、`.vscode/settings.json` 保留本地版本 (内含本地酒馆调试地址)
+- 仓库已在 `.gitattributes` 中为 `dist/` 设置"冲突时用我方版本"的驱动, 这要求执行过一次 `git config --global merge.ours.driver true` (已配置)
+- **未经我明确要求, 不要自动执行提交或推送**; 完成代码改动后, 提醒我用上述命令提交即可
+
 ## 项目结构
 
 ### 核心机制: 前端界面或脚本
