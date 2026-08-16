@@ -40468,16 +40468,16 @@ class Lexer {
                     n += yield* this.pushUntil(isNotAnchorChar);
                     n += yield* this.pushSpaces(true);
                     continue loop;
-            case '-': // this is an error
-            case '?': // this is an error outside flow collections
-            case ':': {
-                const inFlow = this.flowLevel > 0;
-                const ch1 = this.charAt(1);
-                if (isEmpty(ch1) || (inFlow && flowIndicatorChars.has(ch1))) {
-                    if (!inFlow)
-                        this.indentNext = this.indentValue + 1;
-                    else if (this.flowKey)
-                        this.flowKey = false;
+                case '-': // this is an error
+                case '?': // this is an error outside flow collections
+                case ':': {
+                    const inFlow = this.flowLevel > 0;
+                    const ch1 = this.charAt(1);
+                    if (isEmpty(ch1) || (inFlow && flowIndicatorChars.has(ch1))) {
+                        if (!inFlow)
+                            this.indentNext = this.indentValue + 1;
+                        else if (this.flowKey)
+                            this.flowKey = false;
                         n += yield* this.pushCount(1);
                         n += yield* this.pushSpaces(true);
                         continue loop;
@@ -44568,11 +44568,11 @@ module.exports = {"rE":"4.8.3"};
 /******/ 				} else if(binding === 0) { i++; }
 /******/ 			}
 /******/ 		} else {
-/******/ 		for(var key in definition) {
-/******/ 			if(__webpack_require__.o(definition, key) && !__webpack_require__.o(exports, key)) {
-/******/ 				Object.defineProperty(exports, key, { enumerable: true, get: definition[key] });
+/******/ 			for(var key in definition) {
+/******/ 				if(__webpack_require__.o(definition, key) && !__webpack_require__.o(exports, key)) {
+/******/ 					Object.defineProperty(exports, key, { enumerable: true, get: definition[key] });
+/******/ 				}
 /******/ 			}
-/******/ 		}
 /******/ 		}
 /******/ 	};
 /******/ })();
@@ -45405,26 +45405,26 @@ function formatError(error, mapper = (issue) => issue.message) {
             else {
                 const fullpath = [...path, ...issue.path];
                 if (fullpath.length === 0) {
-                fieldErrors._errors.push(mapper(issue));
-            }
-            else {
-                let curr = fieldErrors;
-                let i = 0;
+                    fieldErrors._errors.push(mapper(issue));
+                }
+                else {
+                    let curr = fieldErrors;
+                    let i = 0;
                     while (i < fullpath.length) {
                         const el = fullpath[i];
                         const terminal = i === fullpath.length - 1;
-                    if (!terminal) {
-                        curr[el] = curr[el] || { _errors: [] };
+                        if (!terminal) {
+                            curr[el] = curr[el] || { _errors: [] };
+                        }
+                        else {
+                            curr[el] = curr[el] || { _errors: [] };
+                            curr[el]._errors.push(mapper(issue));
+                        }
+                        curr = curr[el];
+                        i++;
                     }
-                    else {
-                        curr[el] = curr[el] || { _errors: [] };
-                        curr[el]._errors.push(mapper(issue));
-                    }
-                    curr = curr[el];
-                    i++;
                 }
             }
-        }
         }
     };
     processError(error);
@@ -54531,7 +54531,7 @@ function normalizePath(path) {
     let prepend = false;
     if (path.startsWith('//'))
         prepend = true;
-        path = path.replace(DOUBLE_SLASH_RE, '/');
+    path = path.replace(DOUBLE_SLASH_RE, '/');
     if (prepend)
         path = '/' + path;
     return path;
