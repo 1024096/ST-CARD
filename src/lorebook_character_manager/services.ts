@@ -118,6 +118,22 @@ function generationOptions(settings: ManagerSettings): Pick<GenerateConfig, 'pre
   };
 }
 
+async function collectGenerationLorebooks(settings: ManagerSettings): Promise<string> {
+  const sections: string[] = [];
+  for (const [worldbookName, selectedUids] of Object.entries(settings.generationLorebooks)) {
+    if (!selectedUids.length || !getWorldbookNames().includes(worldbookName)) continue;
+    const selectedUidSet = new Set(selectedUids);
+    const entries = (await getWorldbook(worldbookName)).filter(entry => selectedUidSet.has(entry.uid));
+    if (!entries.length) continue;
+    sections.push(
+      `<worldbook name="${worldbookName}">\n${entries
+        .map(entry => `<entry name="${entry.name || `条目 ${entry.uid}`}">\n${entry.content}\n</entry>`)
+        .join('\n\n')}\n</worldbook>`,
+    );
+  }
+  return sections.length ? sections.join('\n\n') : '（本次创作未选择世界书条目）';
+}
+
 export async function generateProfile(
   settings: ManagerSettings,
   requirements: string,
@@ -125,6 +141,7 @@ export async function generateProfile(
   previous = '',
 ): Promise<string> {
   const history = collectHistory(settings);
+  const lorebookContext = await collectGenerationLorebooks(settings);
   let template = settings.template;
   if (settings.templateMode === 'worldbook') {
     if (!settings.templateWorldbook || settings.templateEntryUid === null)
@@ -143,7 +160,12 @@ export async function generateProfile(
     should_stream: false,
     should_silence: false,
     max_chat_history: 0,
-    user_input: `${template}\n\n<chat_excerpt>\n${history}\n</chat_excerpt>\n\n<user_requirements>\n${requirements || '请根据现有剧情自由创作。'}\n</user_requirements>${revision}`,
+    overrides: {
+      world_info_before: '',
+      world_info_after: '',
+      chat_history: { with_depth_entries: false, prompts: [] },
+    },
+    user_input: `${template}\n\n<selected_worldbooks>\n${lorebookContext}\n</selected_worldbooks>\n\n<chat_excerpt>\n${history}\n</chat_excerpt>\n\n<user_requirements>\n${requirements || '请根据现有剧情自由创作。'}\n</user_requirements>${revision}`,
   });
   if (typeof result !== 'string') throw Error('模型返回了工具调用，未返回人物档案文本。');
   return extractTaggedText(result, 'character_profile,人物档案');

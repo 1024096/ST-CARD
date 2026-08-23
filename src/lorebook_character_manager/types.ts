@@ -41,6 +41,7 @@ export type ManagerSettings = {
   extractionMode: 'whitelist' | 'blacklist';
   extractTags: string;
   excludeTags: string;
+  generationLorebooks: Record<string, number[]>;
   injectionDepth: number;
   injectionRole: EntryRole;
   templateMode: 'builtin' | 'worldbook';

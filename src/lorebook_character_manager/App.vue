@@ -3,7 +3,7 @@
   <button v-if="!open" class="launcher" title="世界书角色平台" @click="setOpen(true)">书</button>
 
   <main v-else class="panel">
-    <header class="topbar">
+    <header class="topbar" title="拖拽移动面板">
       <div>
         <div class="eyebrow">LOREBOOK STUDIO</div>
         <h1>世界书角色平台</h1>
@@ -87,6 +87,50 @@
         ></textarea>
       </label>
 
+      <div class="reference-box">
+        <div class="section-title compact">
+          <div>
+            <h2>本次创作参考世界书</h2>
+            <p>这里的条目开关只控制本次角色创作，不会修改酒馆中的原始启用状态。</p>
+          </div>
+        </div>
+        <div class="toolbar reference-picker">
+          <select v-model="generationBookToAdd">
+            <option value="">选择要加入的世界书</option>
+            <option v-for="name in availableGenerationBookNames" :key="name" :value="name">{{ name }}</option>
+          </select>
+          <button class="small-button dark" :disabled="!generationBookToAdd" @click="addGenerationBook">加入</button>
+        </div>
+        <div v-if="!selectedGenerationBookNames.length" class="empty-tags">
+          未选择世界书，本次只使用模板、聊天正文与创作要求。
+        </div>
+        <article v-for="bookName in selectedGenerationBookNames" :key="bookName" class="reference-book">
+          <div class="reference-book-head">
+            <div>
+              <strong>{{ bookName }}</strong>
+              <small v-if="!bookNames.includes(bookName)">当前未找到这本世界书</small>
+            </div>
+            <div class="reference-actions">
+              <button class="text-button" @click="setAllGenerationEntries(bookName, true)">全选</button>
+              <button class="text-button" @click="setAllGenerationEntries(bookName, false)">全不选</button>
+              <button class="text-button danger" @click="removeGenerationBook(bookName)">移除</button>
+            </div>
+          </div>
+          <div v-if="generationBookEntries[bookName]?.length" class="reference-entry-list">
+            <label v-for="entry in generationBookEntries[bookName]" :key="entry.uid" class="reference-entry">
+              <input
+                type="checkbox"
+                :checked="isGenerationEntrySelected(bookName, entry.uid)"
+                @change="toggleGenerationEntry(bookName, entry.uid)"
+              />
+              <span>{{ entry.name || `条目 ${entry.uid}` }}</span>
+              <small>本体{{ entry.enabled ? '已开启' : '已关闭' }}</small>
+            </label>
+          </div>
+          <div v-else class="empty-tags compact-empty">没有可显示的条目。</div>
+        </article>
+      </div>
+
       <div class="grid two">
         <label class="field">
           <span>读取最近楼层</span>
@@ -156,6 +200,20 @@
           <span>修改意见（用于重 ROLL）</span>
           <input v-model="feedback" placeholder="例如：降低超自然能力，强化与主角的利益冲突" />
         </label>
+        <div class="grid two injection-options">
+          <label class="field">
+            <span>档案注入深度</span>
+            <input v-model.number="settings.injectionDepth" type="number" min="0" max="999" />
+          </label>
+          <label class="field">
+            <span>注入身份</span>
+            <select v-model="settings.injectionRole">
+              <option value="system">系统</option>
+              <option value="assistant">AI</option>
+              <option value="user">用户</option>
+            </select>
+          </label>
+        </div>
         <div class="grid two">
           <button class="secondary" :disabled="busy" @click="roll(true)">按意见重 ROLL</button>
           <button class="primary" :disabled="busy || !draft.trim()" @click="injectDraft">注入临时世界书</button>
@@ -248,7 +306,11 @@
             /></label>
             <label class="field"
               ><span>API Key</span
-              ><input v-model="settings.apiKey" type="password" autocomplete="off" placeholder="仅保存在脚本变量中"
+              ><input
+                v-model="settings.apiKey"
+                type="password"
+                autocomplete="off"
+                placeholder="仅保存在本机，不随脚本或角色卡导出"
             /></label>
             <div class="grid two">
               <label class="field"
@@ -366,7 +428,10 @@ import {
 import { useManagerStore } from './store';
 import type { ManagerRuntime } from './types';
 
-const props = defineProps<{ runtime: ManagerRuntime; onPanelState: (open: boolean) => void }>();
+const props = defineProps<{
+  runtime: ManagerRuntime;
+  onPanelState: (open: boolean) => void;
+}>();
 const { settings } = storeToRefs(useManagerStore());
 const tabs = [
   { id: 'create', label: '角色创作' },
@@ -387,6 +452,8 @@ const selectedBook = ref('');
 const newBookName = ref('');
 const entries = ref<WorldbookEntry[]>([]);
 const templateEntries = ref<WorldbookEntry[]>([]);
+const generationBookEntries = ref<Record<string, WorldbookEntry[]>>({});
+const generationBookToAdd = ref('');
 const editing = ref<WorldbookEntry | null>(null);
 const presets = ref<string[]>([]);
 const proxyPresets = ref<string[]>([]);
@@ -395,6 +462,10 @@ let toastTimer: number | undefined;
 let offChat: EventOnReturn | undefined;
 
 const currentProfile = computed(() => settings.value.profiles[SillyTavern.getCurrentChatId()]);
+const selectedGenerationBookNames = computed(() => Object.keys(settings.value.generationLorebooks));
+const availableGenerationBookNames = computed(() =>
+  bookNames.value.filter(name => !selectedGenerationBookNames.value.includes(name)),
+);
 const selectedTagText = computed({
   get: () => (settings.value.extractionMode === 'whitelist' ? settings.value.extractTags : settings.value.excludeTags),
   set: value => {
@@ -494,8 +565,47 @@ async function refreshBooks() {
   presets.value = getPresetNames();
   proxyPresets.value = getProxyPresetNames();
   if (selectedBook.value && !bookNames.value.includes(selectedBook.value)) selectedBook.value = '';
-  await loadEntries();
-  await loadTemplateEntries();
+  await Promise.all([loadEntries(), loadTemplateEntries(), refreshGenerationBookEntries()]);
+}
+
+async function refreshGenerationBookEntries() {
+  const loaded = await Promise.all(
+    selectedGenerationBookNames.value.map(
+      async name => [name, bookNames.value.includes(name) ? await getWorldbook(name) : []] as const,
+    ),
+  );
+  generationBookEntries.value = Object.fromEntries(loaded);
+}
+
+async function addGenerationBook() {
+  const name = generationBookToAdd.value;
+  if (!name || selectedGenerationBookNames.value.includes(name)) return;
+  const entries = await getWorldbook(name);
+  settings.value.generationLorebooks[name] = entries.filter(entry => entry.enabled).map(entry => entry.uid);
+  generationBookEntries.value[name] = entries;
+  generationBookToAdd.value = '';
+}
+
+function removeGenerationBook(name: string) {
+  delete settings.value.generationLorebooks[name];
+  delete generationBookEntries.value[name];
+}
+
+function isGenerationEntrySelected(bookName: string, uid: number): boolean {
+  return settings.value.generationLorebooks[bookName]?.includes(uid) ?? false;
+}
+
+function toggleGenerationEntry(bookName: string, uid: number) {
+  const selected = settings.value.generationLorebooks[bookName] ?? [];
+  settings.value.generationLorebooks[bookName] = selected.includes(uid)
+    ? selected.filter(item => item !== uid)
+    : [...selected, uid];
+}
+
+function setAllGenerationEntries(bookName: string, selected: boolean) {
+  settings.value.generationLorebooks[bookName] = selected
+    ? (generationBookEntries.value[bookName] ?? []).map(entry => entry.uid)
+    : [];
 }
 
 async function loadTemplateEntries(resetSelection = false) {
@@ -573,12 +683,7 @@ function roleLabel(role: string) {
   return ({ system: '系统', assistant: 'AI', user: '用户' } as Record<string, string>)[role] || role;
 }
 
-function handleExternalOpen() {
-  setOpen(true);
-}
-
 onMounted(async () => {
-  window.addEventListener('lcm-open', handleExternalOpen);
   const cached = currentProfile.value;
   if (cached) {
     profileName.value = cached.name;
@@ -604,10 +709,11 @@ watch(
 );
 
 onBeforeUnmount(() => {
-  window.removeEventListener('lcm-open', handleExternalOpen);
   offChat?.stop();
   window.clearTimeout(toastTimer);
 });
+
+defineExpose({ setOpen });
 </script>
 
 <style scoped>
@@ -859,6 +965,98 @@ button:disabled {
   margin: 0 0 16px;
   border: 1px solid #e7e7e7;
   border-radius: 13px;
+  background: #fafafa;
+}
+.reference-box {
+  padding: 13px;
+  margin: 0 0 16px;
+  border: 1px solid #e7e7e7;
+  border-radius: 13px;
+  background: #fafafa;
+}
+.reference-box .section-title p {
+  margin: 5px 0 0;
+  color: #888;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.reference-picker {
+  margin: 12px 0;
+}
+.reference-book {
+  padding: 11px;
+  margin-top: 9px;
+  border: 1px solid #e2e2e2;
+  border-radius: 11px;
+  background: #fff;
+}
+.reference-book-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.reference-book-head > div:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.reference-book-head strong {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.reference-book-head small {
+  color: #b23434;
+  font-size: 10px;
+}
+.reference-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 3px;
+}
+.reference-entry-list {
+  display: grid;
+  gap: 6px;
+  max-height: 210px;
+  padding-top: 10px;
+  margin-top: 9px;
+  overflow-y: auto;
+  border-top: 1px solid #eee;
+}
+.reference-entry {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  background: #f7f7f7;
+  font-size: 11px;
+}
+.reference-entry input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+}
+.reference-entry span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.reference-entry small {
+  color: #aaa;
+  font-size: 10px;
+}
+.compact-empty {
+  margin: 9px 0 0;
+}
+.injection-options {
+  padding: 12px 12px 0;
+  margin-bottom: 12px;
+  border: 1px solid #e6e6e6;
+  border-radius: 11px;
   background: #fafafa;
 }
 .extraction-hint {

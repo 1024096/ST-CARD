@@ -38,12 +38,11 @@ const ProfileSchema = z.object({
   revisions: z.array(RevisionSchema).default([]),
 });
 
-const SettingsSchema = z
+const ExportedSettingsSchema = z
   .object({
     apiMode: z.enum(['follow', 'independent']).default('follow'),
     apiKind: z.enum(['custom', 'proxy']).default('custom'),
     apiUrl: z.string().default(''),
-    apiKey: z.string().default(''),
     apiSource: z.string().default('openai'),
     apiModel: z.string().default(''),
     proxyPreset: z.string().default(''),
@@ -56,26 +55,49 @@ const SettingsSchema = z
     excludeTags: z
       .string()
       .default('think,thinking,reasoning,update,updatevariable,UpdateVariable,Analysis,JSONPatch,StatusBlock,status'),
+    generationLorebooks: z.record(z.string(), z.array(z.number().int().min(0))).default({}),
     injectionDepth: z.number().int().min(0).max(999).default(4),
     injectionRole: z.enum(['system', 'assistant', 'user']).default('system'),
     templateMode: z.enum(['builtin', 'worldbook']).default('builtin'),
     templateWorldbook: z.string().default(''),
     templateEntryUid: z.number().int().nullable().default(null),
     template: z.string().default(DEFAULT_TEMPLATE),
+  })
+  .prefault({});
+
+const PrivateDataSchema = z
+  .object({
+    apiKey: z.string().default(''),
     profiles: z.record(z.string(), ProfileSchema).default({}),
   })
   .prefault({});
 
 export const useManagerStore = defineStore('lorebook-character-manager', () => {
-  const parsed = SettingsSchema.parse(getVariables({ type: 'script', script_id: getScriptId() }));
-  for (const profile of Object.values(parsed.profiles)) {
+  const scriptId = getScriptId();
+  const privateStorageKey = `lorebook_character_manager:${scriptId}`;
+  const legacyData = getVariables({ type: 'script', script_id: scriptId });
+  const exportedSettings = ExportedSettingsSchema.parse(legacyData);
+  const globalVariables = getVariables({ type: 'global' });
+  const privateData = PrivateDataSchema.parse(
+    globalVariables[privateStorageKey] ?? {
+      apiKey: legacyData.apiKey,
+      profiles: legacyData.profiles,
+    },
+  );
+  for (const profile of Object.values(privateData.profiles)) {
     if (!profile.nextUpdateFloor) profile.nextUpdateFloor = profile.updatedAtFloor + profile.updateInterval;
   }
-  const settings = ref<ManagerSettings>(parsed);
+  const settings = ref<ManagerSettings>({ ...exportedSettings, ...privateData });
 
-  watch(settings, value => insertOrAssignVariables(klona(value), { type: 'script', script_id: getScriptId() }), {
-    deep: true,
-  });
+  watch(
+    settings,
+    value => {
+      const { apiKey, profiles, ...exportable } = klona(value);
+      replaceVariables(exportable, { type: 'script', script_id: scriptId });
+      insertOrAssignVariables({ [privateStorageKey]: { apiKey, profiles } }, { type: 'global' });
+    },
+    { deep: true, immediate: true },
+  );
 
   return { settings };
 });
