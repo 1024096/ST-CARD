@@ -1,6 +1,13 @@
-import type { CachedProfile, EntryRole, ManagerRuntime, ManagerSettings, ProfileRevision } from './types';
+import type { ApiSource, CachedProfile, EntryRole, ManagerRuntime, ManagerSettings, ProfileRevision } from './types';
 
 export const MANAGER_MARK = 'lorebook_character_manager';
+export const API_SOURCE_OPTIONS: { value: ApiSource; label: string }[] = [
+  { value: 'custom', label: 'OpenAI 兼容' },
+  { value: 'openai', label: 'OpenAI' },
+  { value: 'claude', label: 'Claude' },
+  { value: 'xai', label: 'Grok / xAI' },
+  { value: 'deepseek', label: 'DeepSeek' },
+];
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -11,6 +18,35 @@ function normalizeExtractedText(value: string): string {
     .replace(/^```(?:xml|yaml|markdown|text)?\s*/i, '')
     .replace(/\s*```$/i, '')
     .trim();
+}
+
+function escapeXmlText(value: string): string {
+  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+}
+
+export function buildProfileCreationPrompt(
+  template: string,
+  lorebookContext: string,
+  history: string,
+  profileName: string,
+  requirements: string,
+  feedback = '',
+  previous = '',
+): string {
+  const normalizedName = profileName.trim();
+  const normalizedRequirements = requirements.trim();
+  const creationRequest = normalizedRequirements || '请根据现有剧情自由创作，并确保设定与聊天正文保持一致。';
+  const revision = previous
+    ? `\n\n<revision_context>\n<previous_profile>\n${previous}\n</previous_profile>\n<revision_request>\n${escapeXmlText(
+        feedback.trim() || '请生成差异明显、质量更高的新版本。',
+      )}\n</revision_request>\n</revision_context>`
+    : '';
+
+  return `${template}\n\n<selected_worldbooks>\n${lorebookContext}\n</selected_worldbooks>\n\n<chat_excerpt>\n${history}\n</chat_excerpt>\n\n<user_requirements>\n<character_name>\n${
+    normalizedName ? escapeXmlText(normalizedName) : '（未指定，可根据现有剧情自行命名）'
+  }\n</character_name>\n<creation_request>\n${escapeXmlText(
+    creationRequest,
+  )}\n</creation_request>\n</user_requirements>${revision}`;
 }
 
 function parseTagList(tagsText: string): string[] {
@@ -55,7 +91,10 @@ function removeTaggedBlocks(source: string, tagsText: string): string {
 
 export function getHistoryMessages(count: number, includeSystem: boolean): ChatMessage[] {
   if (count === 0) return [];
-  return getChatMessages('0-{{lastMessageId}}', { include_swipes: false, hide_state: 'unhidden' })
+  return getChatMessages('0-{{lastMessageId}}', { include_swipes: false, hide_state: 'all' })
+    // Older assistant floors may omit `is_hidden` instead of storing false. The
+    // built-in `unhidden` filter drops those floors, so only exclude explicit true.
+    .filter(message => message.is_hidden !== true)
     .filter(message => includeSystem || message.role === 'user' || message.role === 'assistant')
     .slice(-count);
 }
@@ -95,6 +134,74 @@ export function collectHistory(settings: ManagerSettings): string {
   return blocks.length ? blocks.join('\n\n') : '（所选提取规则没有得到可用正文）';
 }
 
+function normalizeApiBaseUrl(input: string): string {
+  let value = input.trim();
+  if (!value) throw Error('请填写 API 地址。');
+  if (!/^https?:\/\//i.test(value)) value = `https://${value}`;
+  const url = new URL(value);
+  url.search = '';
+  url.hash = '';
+  url.pathname = url.pathname
+    .replace(/\/(?:chat\/)?(?:completions?|competions?)\/?$/i, '')
+    .replace(/\/models\/?$/i, '')
+    .replace(/\/+$/, '');
+  return `${url.origin}${url.pathname}`;
+}
+
+export function getApiBaseUrlCandidates(input: string): string[] {
+  const normalized = normalizeApiBaseUrl(input);
+  const withoutV1 = normalized.replace(/\/v1$/i, '');
+  const candidates = /\/v1$/i.test(normalized) ? [normalized, withoutV1] : [normalized, `${normalized}/v1`];
+  return [...new Set(candidates.filter(Boolean))];
+}
+
+function apiConfigAtBase(settings: ManagerSettings, apiBaseUrl: string): CustomApiConfig {
+  const apiurl = settings.apiSource === 'custom' ? `${apiBaseUrl.replace(/\/+$/, '')}/chat/completions` : apiBaseUrl;
+  return {
+    apiurl,
+    key: settings.apiKey.trim() || undefined,
+    source: settings.apiSource,
+    model: settings.apiModel.trim() || undefined,
+  };
+}
+
+export async function fetchApiModels(settings: ManagerSettings): Promise<{ apiUrl: string; models: string[] }> {
+  const failures: string[] = [];
+  for (const apiUrl of getApiBaseUrlCandidates(settings.apiUrl)) {
+    try {
+      const models = await getModelList({ apiurl: apiUrl, key: settings.apiKey.trim() || undefined });
+      if (models.length) return { apiUrl, models };
+      failures.push(`${apiUrl}：未返回模型`);
+    } catch (error) {
+      failures.push(`${apiUrl}：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  throw Error(`未能拉取模型。已尝试：\n${failures.join('\n')}`);
+}
+
+export async function testApiConnection(settings: ManagerSettings): Promise<{ apiUrl: string; response: string }> {
+  if (!settings.apiModel.trim()) throw Error('请先拉取并选择模型。');
+  const failures: string[] = [];
+  for (const apiUrl of getApiBaseUrlCandidates(settings.apiUrl)) {
+    try {
+      const result = await generateRaw({
+        should_stream: false,
+        should_silence: true,
+        max_chat_history: 0,
+        custom_api: { ...apiConfigAtBase(settings, apiUrl), max_tokens: 16 },
+        ordered_prompts: [{ role: 'system', content: '这是连接测试。请严格只回复 OK。' }, 'user_input'],
+        user_input: '回复 OK',
+      });
+      if (typeof result !== 'string') throw Error('测试返回了工具调用而不是文本。');
+      if (!result.trim()) throw Error('测试成功连接但响应为空。');
+      return { apiUrl, response: result.trim() };
+    } catch (error) {
+      failures.push(`${apiUrl}：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  throw Error(`API 测试失败。已尝试：\n${failures.join('\n')}`);
+}
+
 function customApi(settings: ManagerSettings): CustomApiConfig | undefined {
   if (settings.apiMode === 'follow') return undefined;
   if (settings.apiKind === 'proxy') {
@@ -103,12 +210,8 @@ function customApi(settings: ManagerSettings): CustomApiConfig | undefined {
       model: settings.apiModel.trim() || undefined,
     };
   }
-  return {
-    apiurl: settings.apiUrl.trim() || undefined,
-    key: settings.apiKey.trim() || undefined,
-    source: settings.apiSource.trim() || 'openai',
-    model: settings.apiModel.trim() || undefined,
-  };
+  const [apiBaseUrl] = getApiBaseUrlCandidates(settings.apiUrl);
+  return apiConfigAtBase(settings, apiBaseUrl);
 }
 
 function generationOptions(settings: ManagerSettings): Pick<GenerateConfig, 'preset_name' | 'custom_api'> {
@@ -136,6 +239,7 @@ async function collectGenerationLorebooks(settings: ManagerSettings): Promise<st
 
 export async function generateProfile(
   settings: ManagerSettings,
+  profileName: string,
   requirements: string,
   feedback = '',
   previous = '',
@@ -152,9 +256,6 @@ export async function generateProfile(
     if (!templateEntry) throw Error('选择的模板条目已不存在，请重新选择。');
     template = templateEntry.content;
   }
-  const revision = previous
-    ? `\n\n这是上一版档案：\n<previous_profile>\n${previous}\n</previous_profile>\n修改意见：${feedback || '请生成差异明显、质量更高的新版本。'}`
-    : '';
   const result = await generate({
     ...generationOptions(settings),
     should_stream: false,
@@ -165,7 +266,15 @@ export async function generateProfile(
       world_info_after: '',
       chat_history: { with_depth_entries: false, prompts: [] },
     },
-    user_input: `${template}\n\n<selected_worldbooks>\n${lorebookContext}\n</selected_worldbooks>\n\n<chat_excerpt>\n${history}\n</chat_excerpt>\n\n<user_requirements>\n${requirements || '请根据现有剧情自由创作。'}\n</user_requirements>${revision}`,
+    user_input: buildProfileCreationPrompt(
+      template,
+      lorebookContext,
+      history,
+      profileName,
+      requirements,
+      feedback,
+      previous,
+    ),
   });
   if (typeof result !== 'string') throw Error('模型返回了工具调用，未返回人物档案文本。');
   return extractTaggedText(result, 'character_profile,人物档案');
@@ -355,6 +464,37 @@ export async function saveTemporaryProfile(
   return profile;
 }
 
+export async function savePermanentProfile(
+  worldbookName: string,
+  name: string,
+  content: string,
+  depth: number,
+  role: EntryRole,
+): Promise<WorldbookEntry> {
+  if (!worldbookName || !getWorldbookNames().includes(worldbookName)) throw Error('请选择一个存在的永久世界书。');
+  const profileName = name.trim() || '未命名';
+  const { new_entries } = await createWorldbookEntries(
+    worldbookName,
+    [
+      {
+        name: `角色档案 · ${profileName}`,
+        enabled: true,
+        strategy: { type: 'constant' },
+        position: { type: 'at_depth', role, depth, order: 100 },
+        content: content.trim(),
+        probability: 100,
+        recursion: { prevent_incoming: true, prevent_outgoing: false, delay_until: null },
+        extra: {
+          lorebook_character_manager_permanent: true,
+          created_at: Date.now(),
+        },
+      },
+    ],
+    { render: 'immediate' },
+  );
+  return new_entries[0];
+}
+
 async function deleteExpiredRevisions(profile: CachedProfile, currentFloor: number): Promise<void> {
   const expired = profile.revisions.filter(
     revision => revision.deleteAfterFloor !== null && currentFloor >= revision.deleteAfterFloor,
@@ -374,7 +514,8 @@ async function deleteExpiredRevisions(profile: CachedProfile, currentFloor: numb
 }
 
 function collectHistoryAfterFloor(settings: ManagerSettings, floor: number): string {
-  const messages = getChatMessages('0-{{lastMessageId}}', { include_swipes: false, hide_state: 'unhidden' })
+  const messages = getChatMessages('0-{{lastMessageId}}', { include_swipes: false, hide_state: 'all' })
+    .filter(message => message.is_hidden !== true)
     .filter(message => message.message_id > floor)
     .filter(message => settings.includeSystemHistory || message.role === 'user' || message.role === 'assistant');
   const blocks = messages

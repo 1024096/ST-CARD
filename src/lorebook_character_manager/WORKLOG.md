@@ -122,3 +122,37 @@
 - 提交 `dist/lorebook_character_manager/` 构建产物。
 - 不纳入工作区中其他项目、编辑器配置、工具缓存或无关构建产物。
 - 提交前已通过项目定向 ESLint、TypeScript/webpack 开发构建检查。
+
+## 2026-08-26：保存目标、API 连接与提示词兼容优化
+
+### 档案保存位置
+
+- 人物档案生成后可选择绑定当前聊天，或永久写入用户指定的现有世界书。
+- 临时档案继续随聊天切换自动卸载和恢复；永久档案创建为普通常驻世界书条目，不受聊天切换影响。
+- 两种保存方式均沿用用户设置的注入深度与身份。
+
+### 独立 API 连接
+
+- 默认格式调整为 OpenAI 兼容，并提供 OpenAI、Claude、Grok / xAI、DeepSeek 格式选项。
+- API 地址允许省略协议、`/v1`、`/models` 或填写完整的 `/chat/completions`；连接时自动规范化，并依次尝试原路径与 `/v1` 路径。
+- 支持从服务端拉取模型列表、选择模型并发送最小连接测试，不再要求用户手动输入模型名。
+- 旧版 `openai` 兼容连接设置会迁移为新的 OpenAI 兼容格式；API Key 仍仅保存在本机私有存储中，不进入导出设置。
+
+### XML 聊天提取兼容
+
+- 修复旧聊天 AI 楼层缺少 `is_hidden: false` 时，被 `unhidden` 筛选错误排除的问题。
+- 扫描和档案增量更新现在只排除明确标记为 `is_hidden === true` 的楼层，旧记录中的 `<content>` 等正文标签可正常发现和提取。
+
+### 人物创建提示词
+
+- 角色名称现在会随人物创建请求发送给模型，不再只用于最终保存名称。
+- 固定保留 `<selected_worldbooks>`、`<chat_excerpt>` 与 `<user_requirements>` 分区。
+- `<user_requirements>` 内拆分为 `<character_name>` 和 `<creation_request>`；只填写名称时自动补充“根据现有剧情自由创作并保持一致”的要求。
+- 名称、附加要求和重 ROLL 修改意见会转义 XML 特殊字符；重 ROLL 上一版档案与修改意见改用独立 `<revision_context>` 分区。
+
+### 验证
+
+- 定向 ESLint 检查通过。
+- 通过实际聊天文件确认旧 AI 回复中的 `<content>` 标签可被重新纳入扫描。
+- 通过空创作要求构造测试，确认角色名称、默认要求和各 XML 闭合标签均存在。
+- `pnpm watch` 已生成最新 `dist/lorebook_character_manager/index.js`。

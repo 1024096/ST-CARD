@@ -200,6 +200,34 @@
           <span>修改意见（用于重 ROLL）</span>
           <input v-model="feedback" placeholder="例如：降低超自然能力，强化与主角的利益冲突" />
         </label>
+        <div class="injection-target">
+          <span class="injection-target-title">档案保存位置</span>
+          <div class="segmented">
+            <button :class="{ active: settings.injectionTarget === 'chat' }" @click="settings.injectionTarget = 'chat'">
+              当前聊天（暂时）
+            </button>
+            <button
+              :class="{ active: settings.injectionTarget === 'worldbook' }"
+              @click="settings.injectionTarget = 'worldbook'"
+            >
+              指定世界书（永久）
+            </button>
+          </div>
+          <p class="hint">
+            {{
+              settings.injectionTarget === 'chat'
+                ? '绑定当前聊天；切换聊天时自动卸载，返回时从本机缓存恢复。'
+                : '创建普通世界书条目；不会随聊天切换或关闭本脚本而删除。'
+            }}
+          </p>
+          <label v-if="settings.injectionTarget === 'worldbook'" class="field permanent-worldbook">
+            <span>永久保存到</span>
+            <select v-model="settings.permanentWorldbook">
+              <option value="">请选择世界书</option>
+              <option v-for="name in bookNames" :key="name" :value="name">{{ name }}</option>
+            </select>
+          </label>
+        </div>
         <div class="grid two injection-options">
           <label class="field">
             <span>档案注入深度</span>
@@ -216,7 +244,15 @@
         </div>
         <div class="grid two">
           <button class="secondary" :disabled="busy" @click="roll(true)">按意见重 ROLL</button>
-          <button class="primary" :disabled="busy || !draft.trim()" @click="injectDraft">注入临时世界书</button>
+          <button
+            class="primary"
+            :disabled="
+              busy || !draft.trim() || (settings.injectionTarget === 'worldbook' && !settings.permanentWorldbook)
+            "
+            @click="injectDraft"
+          >
+            {{ settings.injectionTarget === 'chat' ? '绑定当前聊天' : '永久写入世界书' }}
+          </button>
         </div>
       </template>
     </section>
@@ -301,23 +337,55 @@
             </button>
           </div>
           <template v-if="settings.apiKind === 'custom'">
-            <label class="field"
-              ><span>API 地址</span><input v-model="settings.apiUrl" placeholder="https://api.example.com/v1"
-            /></label>
-            <label class="field"
-              ><span>API Key</span
-              ><input
+            <label class="field">
+              <span>API 格式</span>
+              <select v-model="settings.apiSource" @change="resetApiConnectionState">
+                <option v-for="source in API_SOURCE_OPTIONS" :key="source.value" :value="source.value">
+                  {{ source.label }}
+                </option>
+              </select>
+            </label>
+            <label class="field">
+              <span>API 地址</span>
+              <input
+                v-model="settings.apiUrl"
+                placeholder="api.example.com 或 https://api.example.com/v1"
+                @input="resetApiConnectionState"
+              />
+            </label>
+            <p class="hint api-url-hint">
+              可填写域名、/v1、/models 或完整 /chat/completions 地址；系统会自动整理并测试原地址与 /v1 两种路径。
+            </p>
+            <label class="field">
+              <span>API Key</span>
+              <input
                 v-model="settings.apiKey"
                 type="password"
                 autocomplete="off"
                 placeholder="仅保存在本机，不随脚本或角色卡导出"
-            /></label>
-            <div class="grid two">
-              <label class="field"
-                ><span>API 类型</span><input v-model="settings.apiSource" placeholder="openai"
-              /></label>
-              <label class="field"><span>模型</span><input v-model="settings.apiModel" placeholder="模型名称" /></label>
+                @input="resetApiConnectionState"
+              />
+            </label>
+            <div class="api-model-row">
+              <label class="field">
+                <span>模型</span>
+                <select v-model="settings.apiModel" :disabled="!availableApiModels.length">
+                  <option value="">{{ availableApiModels.length ? '请选择模型' : '请先拉取模型' }}</option>
+                  <option v-for="model in availableApiModels" :key="model" :value="model">{{ model }}</option>
+                </select>
+              </label>
+              <button class="small-button" :disabled="apiBusy || !settings.apiUrl.trim()" @click="loadApiModels">
+                {{ apiBusy === 'models' ? '拉取中…' : '拉取模型' }}
+              </button>
             </div>
+            <button
+              class="secondary api-test-button"
+              :disabled="apiBusy || !settings.apiUrl.trim() || !settings.apiModel"
+              @click="runApiTest"
+            >
+              {{ apiBusy === 'test' ? '测试中…' : '测试所选模型' }}
+            </button>
+            <p v-if="apiStatus" :class="['api-status', apiStatusType]">{{ apiStatus }}</p>
           </template>
           <template v-else>
             <label class="field">
@@ -418,10 +486,14 @@ import { klona } from 'klona';
 import { storeToRefs } from 'pinia';
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import {
+  API_SOURCE_OPTIONS,
   createBasicEntry,
   detectHistoryXmlTags,
+  fetchApiModels,
   generateProfile,
+  savePermanentProfile,
   saveTemporaryProfile,
+  testApiConnection,
   updateCurrentProfileNow,
   type DetectedXmlTag,
 } from './services';
@@ -458,6 +530,10 @@ const editing = ref<WorldbookEntry | null>(null);
 const presets = ref<string[]>([]);
 const proxyPresets = ref<string[]>([]);
 const detectedTags = ref<DetectedXmlTag[]>([]);
+const apiModels = ref<string[]>([]);
+const apiBusy = ref<false | 'models' | 'test'>(false);
+const apiStatus = ref('');
+const apiStatusType = ref<'ok' | 'error'>('ok');
 let toastTimer: number | undefined;
 let offChat: EventOnReturn | undefined;
 
@@ -465,6 +541,9 @@ const currentProfile = computed(() => settings.value.profiles[SillyTavern.getCur
 const selectedGenerationBookNames = computed(() => Object.keys(settings.value.generationLorebooks));
 const availableGenerationBookNames = computed(() =>
   bookNames.value.filter(name => !selectedGenerationBookNames.value.includes(name)),
+);
+const availableApiModels = computed(() =>
+  [...new Set([settings.value.apiModel, ...apiModels.value].filter(Boolean))].sort((a, b) => a.localeCompare(b)),
 );
 const selectedTagText = computed({
   get: () => (settings.value.extractionMode === 'whitelist' ? settings.value.extractTags : settings.value.excludeTags),
@@ -514,6 +593,50 @@ function notify(text: string, type: 'ok' | 'error' = 'ok') {
   toastTimer = window.setTimeout(() => (message.value = ''), 3600);
 }
 
+function resetApiConnectionState() {
+  apiModels.value = [];
+  settings.value.apiModel = '';
+  apiStatus.value = '';
+}
+
+async function loadApiModels() {
+  if (apiBusy.value) return;
+  apiBusy.value = 'models';
+  apiStatus.value = '正在尝试 API 地址并拉取模型…';
+  apiStatusType.value = 'ok';
+  try {
+    const result = await fetchApiModels(settings.value);
+    settings.value.apiUrl = result.apiUrl;
+    apiModels.value = result.models;
+    settings.value.apiModel = result.models.includes(settings.value.apiModel)
+      ? settings.value.apiModel
+      : (result.models[0] ?? '');
+    apiStatus.value = `连接成功，使用 ${result.apiUrl}，已拉取 ${result.models.length} 个模型。`;
+  } catch (error) {
+    apiStatusType.value = 'error';
+    apiStatus.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    apiBusy.value = false;
+  }
+}
+
+async function runApiTest() {
+  if (apiBusy.value) return;
+  apiBusy.value = 'test';
+  apiStatus.value = `正在测试 ${settings.value.apiModel}…`;
+  apiStatusType.value = 'ok';
+  try {
+    const result = await testApiConnection(settings.value);
+    settings.value.apiUrl = result.apiUrl;
+    apiStatus.value = `测试成功，使用 ${result.apiUrl}。模型返回：${result.response.slice(0, 120)}`;
+  } catch (error) {
+    apiStatusType.value = 'error';
+    apiStatus.value = error instanceof Error ? error.message : String(error);
+  } finally {
+    apiBusy.value = false;
+  }
+}
+
 async function action(work: () => Promise<void>, success?: string) {
   if (busy.value) return;
   busy.value = true;
@@ -538,6 +661,7 @@ async function roll(isReroll: boolean) {
     async () => {
       draft.value = await generateProfile(
         settings.value,
+        profileName.value,
         requirements.value,
         isReroll ? feedback.value : '',
         isReroll ? draft.value : '',
@@ -548,16 +672,30 @@ async function roll(isReroll: boolean) {
 }
 
 async function injectDraft() {
-  await action(async () => {
-    await saveTemporaryProfile(
-      settings.value,
-      profileName.value,
-      draft.value,
-      settings.value.injectionDepth,
-      settings.value.injectionRole,
-      props.runtime,
-    );
-  }, '已注入当前聊天的临时世界书');
+  const permanent = settings.value.injectionTarget === 'worldbook';
+  await action(
+    async () => {
+      if (permanent) {
+        await savePermanentProfile(
+          settings.value.permanentWorldbook,
+          profileName.value,
+          draft.value,
+          settings.value.injectionDepth,
+          settings.value.injectionRole,
+        );
+        return;
+      }
+      await saveTemporaryProfile(
+        settings.value,
+        profileName.value,
+        draft.value,
+        settings.value.injectionDepth,
+        settings.value.injectionRole,
+        props.runtime,
+      );
+    },
+    permanent ? `已永久写入世界书“${settings.value.permanentWorldbook}”` : '已绑定当前聊天的临时世界书',
+  );
 }
 
 async function refreshBooks() {
@@ -1059,6 +1197,26 @@ button:disabled {
   border-radius: 11px;
   background: #fafafa;
 }
+.injection-target {
+  padding: 12px;
+  margin-bottom: 10px;
+  border: 1px solid #e6e6e6;
+  border-radius: 11px;
+  background: #fafafa;
+}
+.injection-target-title {
+  display: block;
+  margin-bottom: 9px;
+  color: #666;
+  font-size: 12px;
+  font-weight: 650;
+}
+.injection-target .segmented {
+  margin-bottom: 10px;
+}
+.permanent-worldbook {
+  margin: 12px 0 0;
+}
 .extraction-hint {
   margin: -5px 1px 10px;
 }
@@ -1222,6 +1380,38 @@ button:disabled {
 }
 .setting-group h2 {
   margin-bottom: 12px;
+}
+.api-url-hint {
+  margin: -7px 0 14px;
+}
+.api-model-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+}
+.api-model-row .small-button {
+  min-height: 42px;
+  margin-bottom: 14px;
+}
+.api-test-button {
+  margin-top: -2px;
+}
+.api-status {
+  padding: 10px 11px;
+  margin: 10px 0 0;
+  border-radius: 9px;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-line;
+}
+.api-status.ok {
+  background: #eef8f1;
+  color: #287244;
+}
+.api-status.error {
+  background: #fff0f0;
+  color: #a73535;
 }
 .segmented {
   display: grid;

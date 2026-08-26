@@ -1,4 +1,5 @@
 export type EntryRole = 'system' | 'assistant' | 'user';
+export type ApiSource = 'custom' | 'openai' | 'claude' | 'xai' | 'deepseek';
 
 export type ProfileRevision = {
   version: number;
@@ -29,9 +30,10 @@ export type CachedProfile = {
 export type ManagerSettings = {
   apiMode: 'follow' | 'independent';
   apiKind: 'custom' | 'proxy';
+  apiFormatVersion: 1;
   apiUrl: string;
   apiKey: string;
-  apiSource: string;
+  apiSource: ApiSource;
   apiModel: string;
   proxyPreset: string;
   presetMode: 'follow' | 'independent';
@@ -42,6 +44,8 @@ export type ManagerSettings = {
   extractTags: string;
   excludeTags: string;
   generationLorebooks: Record<string, number[]>;
+  injectionTarget: 'chat' | 'worldbook';
+  permanentWorldbook: string;
   injectionDepth: number;
   injectionRole: EntryRole;
   templateMode: 'builtin' | 'worldbook';

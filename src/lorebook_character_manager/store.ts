@@ -42,8 +42,18 @@ const ExportedSettingsSchema = z
   .object({
     apiMode: z.enum(['follow', 'independent']).default('follow'),
     apiKind: z.enum(['custom', 'proxy']).default('custom'),
+    apiFormatVersion: z.literal(1).default(1),
     apiUrl: z.string().default(''),
-    apiSource: z.string().default('openai'),
+    apiSource: z
+      .preprocess(
+        value => {
+          if (value === 'anthropic') return 'claude';
+          if (value === 'grok') return 'xai';
+          return ['custom', 'openai', 'claude', 'xai', 'deepseek'].includes(String(value)) ? value : 'custom';
+        },
+        z.enum(['custom', 'openai', 'claude', 'xai', 'deepseek']),
+      )
+      .default('custom'),
     apiModel: z.string().default(''),
     proxyPreset: z.string().default(''),
     presetMode: z.enum(['follow', 'independent']).default('follow'),
@@ -56,6 +66,8 @@ const ExportedSettingsSchema = z
       .string()
       .default('think,thinking,reasoning,update,updatevariable,UpdateVariable,Analysis,JSONPatch,StatusBlock,status'),
     generationLorebooks: z.record(z.string(), z.array(z.number().int().min(0))).default({}),
+    injectionTarget: z.enum(['chat', 'worldbook']).default('chat'),
+    permanentWorldbook: z.string().default(''),
     injectionDepth: z.number().int().min(0).max(999).default(4),
     injectionRole: z.enum(['system', 'assistant', 'user']).default('system'),
     templateMode: z.enum(['builtin', 'worldbook']).default('builtin'),
@@ -76,7 +88,16 @@ export const useManagerStore = defineStore('lorebook-character-manager', () => {
   const scriptId = getScriptId();
   const privateStorageKey = `lorebook_character_manager:${scriptId}`;
   const legacyData = getVariables({ type: 'script', script_id: scriptId });
-  const exportedSettings = ExportedSettingsSchema.parse(legacyData);
+  const exportedSettings = ExportedSettingsSchema.parse({
+    ...legacyData,
+    apiSource:
+      legacyData.apiFormatVersion === 1
+        ? legacyData.apiSource
+        : legacyData.apiSource === 'openai'
+          ? 'custom'
+          : legacyData.apiSource,
+    apiFormatVersion: 1,
+  });
   const globalVariables = getVariables({ type: 'global' });
   const privateData = PrivateDataSchema.parse(
     globalVariables[privateStorageKey] ?? {
